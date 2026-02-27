@@ -3,44 +3,80 @@ import time
 import pandas as pd
 from bs4 import BeautifulSoup
 
-def buscar_voos(origem, destino, data_viagem, tipo_pagamento, driver):
-    """
-    Procura voos usando o driver fornecido.
-    Retorna um DataFrame do Pandas com os resultados.
-    """
-    resultados = []
+SITES_VIAGENS = {
+    "R$ (Dinheiro)": {
+        "Google Flights": "https://www.google.com/travel/flights?q=Flights%20to%20{destino}%20from%20{origem}%20on%20{data}",
+        "MaxMilhas": "https://www.maxmilhas.com.br/busca-passagens-aereas/sow/{origem}/{destino}/{data}"
+    },
+    "Milhas / Pontos": {
+        "Azul Fidelidade": "https://www.voeazul.com.br/br/pt/home",
+        "Livelo": "https://www.livelo.com.br/use-seus-pontos/viagens",
+        "Smiles (Gol)": "https://www.smiles.com.br/passagens-aereas/{origem}/{destino}/{data}"
+    }
+}
+
+def extrair_google_flights(soup, url, origem, destino, data_viagem):
+    voos_encontrados = []
+    itens_voo = soup.find_all('li', class_='pIav2d') 
     
-    try:
-        if tipo_pagamento == "R$ (Dinheiro)":
-            # URL de exemplo para o Google Flights
-            # Nota: O Google Flights usa formatos de URL complexos. Aqui é um exemplo didático.
-            url = f"https://www.google.com/travel/flights?q=Flights%20to%20{destino}%20from%20{origem}%20on%20{data_viagem}"
-        else:
-            # URL de exemplo para site de milhas
-            url = f"https://www.smiles.com.br/passagens-aereas/{origem}/{destino}/{data_viagem}"
+    for item in itens_voo:
+        try:
+            cia_aerea_tag = item.find('div', class_='sSHqwe')
+            preco_tag = item.find('div', class_='YMlKvd')
             
-        driver.get(url)
-        
-        # Esperamos alguns segundos para a página processar os dados dinâmicos
-        # O ideal no futuro é usar WebDriverWait verificando um elemento da página
-        time.sleep(8) 
-        
-        # Passamos o HTML da página para o BeautifulSoup analisar
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
-        # ATENÇÃO: Os sites mudam as classes CSS frequentemente. 
-        # Terás de inspecionar o site real para atualizar estas classes ('div', class_='exemplo')
-        # Simulando a extração de dados:
-        resultados.append({
-            "Tipo": "Voo",
-            "Origem": origem,
-            "Destino": destino,
-            "Data": data_viagem,
-            "Preço/Pontos": "Consultar site (Ex: R$ 1.500)" if "R$" in tipo_pagamento else "Consultar site (Ex: 40.000 pts)",
-            "Link Original": url
-        })
-        
-    except Exception as e:
-        print(f"Erro ao procurar voos: {e}")
-        
-    return pd.DataFrame(resultados)
+            # Tenta encontrar a informação de paradas/escalas (o Google Flights usa classes variadas, procuramos texto)
+            escalas = "1+ Paradas"
+            texto_item = item.text.lower()
+            if "direto" in texto_item or "nonstop" in texto_item:
+                escalas = "Direto"
+            
+            if cia_aerea_tag and preco_tag:
+                voos_encontrados.append({
+                    "Site": "Google Flights",
+                    "Companhia": cia_aerea_tag.text.strip(),
+                    "Escalas": escalas,
+                    "Origem": origem,
+                    "Destino": destino,
+                    "Data": data_viagem,
+                    "Preço/Pontos": preco_tag.text.strip(),
+                    "Link Original": url
+                })
+        except:
+            continue
+            
+    return voos_encontrados
+
+def buscar_voos(origem, destino, data_viagem, tipo_pagamento, adultos, criancas, driver):
+    resultados_totais = []
+    data_short = data_viagem.replace("-", "")[2:] 
+    sites_alvo = SITES_VIAGENS.get(tipo_pagamento, {})
+    
+    for nome_site, url_base in sites_alvo.items():
+        print(f"A pesquisar em: {nome_site}...")
+        try:
+            url = url_base.format(origem=origem, destino=destino, data=data_viagem, data_short=data_short)
+            # Dica: Muitos sites aceitam o número de passageiros na URL. Para simplificar esta etapa, 
+            # o robô fará a busca padrão, e indicaremos as quantidades na interface de análise.
+            
+            driver.get(url)
+            time.sleep(10) 
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            
+            if nome_site == "Google Flights":
+                dados_site = extrair_google_flights(soup, url, origem, destino, data_viagem)
+                resultados_totais.extend(dados_site)
+            else:
+                resultados_totais.append({
+                    "Site": nome_site,
+                    "Companhia": "Várias",
+                    "Escalas": "-",
+                    "Origem": origem,
+                    "Destino": destino,
+                    "Data": data_viagem,
+                    "Preço/Pontos": "Verificar no site",
+                    "Link Original": url
+                })
+        except Exception as e:
+            continue
+
+    return pd.DataFrame(resultados_totais)

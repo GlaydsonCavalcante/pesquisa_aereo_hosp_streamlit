@@ -1,74 +1,154 @@
 # app.py
 import streamlit as st
 import pandas as pd
+import re
 
-# Importamos os nossos scrapers personalizados
+# Importação dos nossos módulos
+from viagens_app.database import guardar_pesquisa, carregar_historico
 from scrapers.utils import iniciar_driver
 from scrapers.flights import buscar_voos
 from scrapers.hotels import buscar_hoteis
 
-# --- CONFIGURAÇÃO DA INTERFACE ---
-st.set_page_config(page_title="Hub de Viagens Pro", page_icon="✈️", layout="wide")
+# --- CONFIGURAÇÃO GLOBAL ---
+st.set_page_config(page_title="Travel Analytics Pro", page_icon="🌍", layout="wide")
 
-# --- MICRO PAINEL LATERAL ---
+# --- PAINEL LATERAL (CONFIGURAÇÕES DO ROBÔ) ---
 with st.sidebar:
-    st.title("🛠️ Painel de Controlo")
-    tipo_servico = st.selectbox("O que desejas procurar?", ["Passagens Aéreas", "Hospedagem"])
+    st.title("⚙️ Motor de Extração")
+    st.markdown("Configure o comportamento do robô nas pesquisas.")
     
-    # Só mostramos a opção de pagamento se for voo
-    if tipo_servico == "Passagens Aéreas":
-        modo_pagamento = st.radio("Moeda de troca:", ["R$ (Dinheiro)", "Milhas / Pontos"])
-    else:
-        modo_pagamento = "R$ (Dinheiro)"
+    usa_anonimo = st.toggle("Navegação Anónima", value=True, help="Evita rastreio de cookies.")
+    headless_mode = st.toggle("Modo Silencioso (Background)", value=False, help="Executa sem abrir a janela do Chrome.")
     
     st.divider()
-    st.subheader("Configurações do Robô")
-    usa_anonimo = st.toggle("Aba Anónima (Recomendado)", value=True, help="Impede que os sites aumentem o preço baseando-se nas tuas visitas.")
-    headless_mode = st.toggle("Modo Silencioso", value=False, help="Executa a pesquisa sem abrir a janela do navegador.")
-
-# --- ÁREA PRINCIPAL ---
-st.header(f"🔍 Pesquisa de {tipo_servico}")
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    origem = st.text_input("Origem (IATA)", placeholder="Ex: GRU").upper()
-with col2:
-    destino = st.text_input("Destino", placeholder="Ex: MCO ou Orlando").upper()
-with col3:
-    data_viagem = st.date_input("Data da Viagem")
-
-# Formata a data para texto (YYYY-MM-DD), que é o padrão da maioria dos sites
-data_str = data_viagem.strftime("%Y-%m-%d")
-
-# --- AÇÃO DO UTILIZADOR ---
-if st.button("🚀 Iniciar Captura de Preços", type="primary"):
-    
-    # Validação simples
-    if not destino or (tipo_servico == "Passagens Aéreas" and not origem):
-        st.error("⚠️ Por favor, preenche os campos de Origem e Destino corretamente.")
+    st.subheader("📊 Histórico Local")
+    df_hist = carregar_historico()
+    if not df_hist.empty:
+        st.success(f"{len(df_hist)} registos guardados na base de dados.")
+        # Permite descarregar o histórico completo de todas as pesquisas já feitas
+        csv_hist = df_hist.to_csv(index=False, sep=';').encode('utf-8')
+        st.download_button("📥 Descarregar Base de Dados Completa", data=csv_hist, file_name="historico_completo.csv", mime="text/csv")
     else:
-        with st.spinner("A inicializar os motores e a pesquisar em aba anónima..."):
-            # 1. Iniciamos o navegador centralizado
-            driver = iniciar_driver(anonimo=usa_anonimo, oculto=headless_mode)
-            
-            try:
-                # 2. Encaminhamos para o ficheiro correto com base na escolha
-                if tipo_servico == "Passagens Aéreas":
-                    df_resultados = buscar_voos(origem, destino, data_str, modo_pagamento, driver)
-                else:
-                    df_resultados = buscar_hoteis(destino, data_str, driver)
-                
-                # 3. Exibimos os resultados
-                if not df_resultados.empty:
-                    st.success("🎉 Busca concluída com sucesso!")
-                    st.dataframe(df_resultados, use_container_width=True)
+        st.info("Nenhuma pesquisa guardada ainda.")
+
+# --- INTERFACE PRINCIPAL ---
+st.title("🌍 Painel de Pesquisa de Viagens")
+st.markdown("Selecione o módulo que deseja pesquisar nas abas abaixo:")
+
+# Usamos Tabs (Abas) para separar logicamente as ferramentas
+aba_voos, aba_hoteis = st.tabs(["✈️ Passagens Aéreas", "🏨 Hospedagem"])
+
+# ==========================================
+# MÓDULO 1: PASSAGENS AÉREAS
+# ==========================================
+with aba_voos:
+    st.subheader("Configurar Rota e Passageiros")
+    
+    # Linha 1: Origem e Destino
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        origem = st.text_input("Origem (IATA)", placeholder="Ex: BSB", key="origem_voo").upper()
+    with col_v2:
+        destino_voo = st.text_input("Destino (IATA)", placeholder="Ex: IGU", key="destino_voo").upper()
+        
+    # Linha 2: Datas e Moeda
+    col_v3, col_v4, col_v5 = st.columns(3)
+    with col_v3:
+        data_ida = st.date_input("Data de Ida", key="data_ida")
+    with col_v4:
+        # Deixamos a volta opcional por enquanto (pode ser útil no futuro)
+        data_volta = st.date_input("Data de Volta (Opcional)", value=None, key="data_volta")
+    with col_v5:
+        modo_pag_voo = st.selectbox("Moeda de Pagamento:", ["R$ (Dinheiro)", "Milhas / Pontos"])
+
+    # Linha 3: Passageiros
+    col_v6, col_v7 = st.columns(2)
+    with col_v6:
+        voo_adt = st.number_input("Adultos", min_value=1, value=1, key="voo_adt")
+    with col_v7:
+        voo_chd = st.number_input("Crianças", min_value=0, value=0, key="voo_chd")
+
+    # Ação de Pesquisa
+    if st.button("🚀 Iniciar Pesquisa de Voos", type="primary", use_container_width=True):
+        if not origem or not destino_voo:
+            st.error("⚠️ Origem e Destino são obrigatórios.")
+        else:
+            with st.spinner("A iniciar motor de busca de voos..."):
+                driver = iniciar_driver(anonimo=usa_anonimo, oculto=headless_mode)
+                try:
+                    data_str = data_ida.strftime("%Y-%m-%d")
+                    df_voos = buscar_voos(origem, destino_voo, data_str, modo_pag_voo, voo_adt, voo_chd, driver)
                     
-                    # Botão para exportar
-                    csv = df_resultados.to_csv(index=False, sep=';').encode('utf-8')
-                    st.download_button("📥 Descarregar Planilha CSV", data=csv, file_name="pesquisa_viagem.csv", mime="text/csv")
-                else:
-                    st.warning("Não foram encontrados resultados. Tenta alterar as datas ou locais.")
-            
-            finally:
-                # 4. Fechamos sempre o navegador no final, mesmo que dê erro
-                driver.quit()
+                    if not df_voos.empty:
+                        # Guarda no nosso banco de dados local
+                        guardar_pesquisa(df_voos, "Voos")
+                        
+                        st.success("🎉 Resultados capturados e guardados no histórico!")
+                        st.dataframe(df_voos, use_container_width=True, hide_index=True)
+                    else:
+                        st.warning("Sem resultados.")
+                finally:
+                    driver.quit()
+
+# ==========================================
+# MÓDULO 2: HOSPEDAGEM (NOVA ESTRUTURA)
+# ==========================================
+with aba_hoteis:
+    st.subheader("Configurar Estadia e Preferências")
+    
+    # Linha 1: Destino
+    destino_hotel = st.text_input("Cidade / Região de Destino", placeholder="Ex: Foz do Iguaçu, PR", key="destino_hotel")
+    
+    # Linha 2: Datas Exatas (Check-in e Check-out)
+    col_h1, col_h2 = st.columns(2)
+    with col_h1:
+        checkin = st.date_input("Check-in", key="checkin")
+    with col_h2:
+        checkout = st.date_input("Check-out", key="checkout")
+        
+    # Linha 3: Hóspedes e Quartos
+    col_h3, col_h4, col_h5 = st.columns(3)
+    with col_h3:
+        hotel_adt = st.number_input("Adultos", min_value=1, value=2, key="hotel_adt")
+    with col_h4:
+        hotel_chd = st.number_input("Crianças", min_value=0, value=0, key="hotel_chd")
+    with col_h5:
+        hotel_quartos = st.number_input("Quartos", min_value=1, value=1, key="hotel_quartos")
+
+    # Linha 4: Preferências do utilizador (O que pediste!)
+    st.markdown("**Preferências do Alojamento**")
+    tipo_estadia = st.multiselect(
+        "Tipos de Propriedade:", 
+        ["Hotel", "Apartamento", "Casa", "Pousada", "Resort", "Sítio / Chácara"],
+        default=["Hotel", "Pousada"]
+    )
+    comodidades = st.multiselect(
+        "Filtros Desejados:",
+        ["Piscina", "Aceita Pets", "Pequeno-almoço Incluído", "Estacionamento", "Cancelamento Grátis"]
+    )
+
+    # Ação de Pesquisa
+    if st.button("🚀 Iniciar Pesquisa de Hospedagem", type="primary", use_container_width=True):
+        if not destino_hotel:
+            st.error("⚠️ O destino é obrigatório para pesquisar alojamento.")
+        elif checkout <= checkin:
+            st.error("⚠️ A data de Check-out tem de ser posterior à data de Check-in.")
+        else:
+            with st.spinner("A iniciar motor de busca de hotéis..."):
+                driver = iniciar_driver(anonimo=usa_anonimo, oculto=headless_mode)
+                try:
+                    ci_str = checkin.strftime("%Y-%m-%d")
+                    co_str = checkout.strftime("%Y-%m-%d")
+                    # No futuro passaremos check-out, pessoas e preferências para o scraper
+                    df_hoteis = buscar_hoteis(destino_hotel, ci_str, driver)
+                    
+                    if not df_hoteis.empty:
+                        # Guarda no nosso banco de dados local
+                        guardar_pesquisa(df_hoteis, "Hospedagem")
+                        
+                        st.success("🎉 Alojamentos capturados e guardados no histórico!")
+                        st.dataframe(df_hoteis, use_container_width=True, hide_index=True)
+                    else:
+                        st.warning("Sem resultados.")
+                finally:
+                    driver.quit()
