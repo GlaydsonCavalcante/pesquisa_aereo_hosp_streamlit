@@ -91,22 +91,33 @@ with aba_voos:
                     driver.quit()
 
 # ==========================================
-# MÓDULO 2: HOSPEDAGEM (NOVA ESTRUTURA)
+# MÓDULO 2: HOSPEDAGEM (NOVA ESTRUTURA UX/UI)
 # ==========================================
 with aba_hoteis:
     st.subheader("Configurar Estadia e Preferências")
     
-    # Linha 1: Destino
-    destino_hotel = st.text_input("Cidade / Região de Destino", placeholder="Ex: Foz do Iguaçu, PR", key="destino_hotel")
+    # Lista predefinida para UX melhorada (Auto-complete)
+    destinos_populares = [
+        "Foz do Iguaçu, PR", "Rio de Janeiro, RJ", "São Paulo, SP", 
+        "Gramado, RS", "Salvador, BA", "Florianópolis, SC", "Maceió, AL", "Outro"
+    ]
     
-    # Linha 2: Datas Exatas (Check-in e Check-out)
+    col_h_dest1, col_h_dest2 = st.columns([2, 1])
+    with col_h_dest1:
+        destino_selecionado = st.selectbox("Cidade / Região de Destino", destinos_populares, key="destino_hotel_sel")
+    with col_h_dest2:
+        # Se escolher "Outro", abre uma caixa de texto
+        if destino_selecionado == "Outro":
+            destino_hotel = st.text_input("Digite o Destino", placeholder="Ex: Paris", key="destino_hotel_txt")
+        else:
+            destino_hotel = destino_selecionado
+    
     col_h1, col_h2 = st.columns(2)
     with col_h1:
         checkin = st.date_input("Check-in", key="checkin")
     with col_h2:
         checkout = st.date_input("Check-out", key="checkout")
         
-    # Linha 3: Hóspedes e Quartos
     col_h3, col_h4, col_h5 = st.columns(3)
     with col_h3:
         hotel_adt = st.number_input("Adultos", min_value=1, value=2, key="hotel_adt")
@@ -115,40 +126,62 @@ with aba_hoteis:
     with col_h5:
         hotel_quartos = st.number_input("Quartos", min_value=1, value=1, key="hotel_quartos")
 
-    # Linha 4: Preferências do utilizador (O que pediste!)
-    st.markdown("**Preferências do Alojamento**")
-    tipo_estadia = st.multiselect(
-        "Tipos de Propriedade:", 
-        ["Hotel", "Apartamento", "Casa", "Pousada", "Resort", "Sítio / Chácara"],
-        default=["Hotel", "Pousada"]
-    )
-    comodidades = st.multiselect(
-        "Filtros Desejados:",
-        ["Piscina", "Aceita Pets", "Pequeno-almoço Incluído", "Estacionamento", "Cancelamento Grátis"]
-    )
-
-    # Ação de Pesquisa
-    if st.button("🚀 Iniciar Pesquisa de Hospedagem", type="primary", use_container_width=True):
-        if not destino_hotel:
-            st.error("⚠️ O destino é obrigatório para pesquisar alojamento.")
-        elif checkout <= checkin:
-            st.error("⚠️ A data de Check-out tem de ser posterior à data de Check-in.")
+    if st.button("🚀 Pesquisar Hospedagem", type="primary", use_container_width=True):
+        if not destino_hotel or checkout <= checkin:
+            st.error("⚠️ Verifique o destino e garanta que o Check-out é após o Check-in.")
         else:
-            with st.spinner("A iniciar motor de busca de hotéis..."):
+            with st.spinner(f"A extrair alojamentos em {destino_hotel}..."):
                 driver = iniciar_driver(anonimo=usa_anonimo, oculto=headless_mode)
                 try:
                     ci_str = checkin.strftime("%Y-%m-%d")
                     co_str = checkout.strftime("%Y-%m-%d")
-                    # Agora passamos todos os parâmetros de datas e hóspedes
                     df_hoteis = buscar_hoteis(destino_hotel, ci_str, co_str, hotel_adt, hotel_chd, hotel_quartos, driver)
                     
                     if not df_hoteis.empty:
-                        # Guarda no nosso banco de dados local
+                        # UX: ORDENAÇÃO AUTOMÁTICA DO MAIS BARATO
+                        df_hoteis = df_hoteis.sort_values(by="Preço Numérico", ascending=True)
                         guardar_pesquisa(df_hoteis, "Hospedagem")
                         
-                        st.success("🎉 Alojamentos capturados e guardados no histórico!")
-                        st.dataframe(df_hoteis, use_container_width=True, hide_index=True)
+                        st.success("🎉 Pesquisa concluída e ordenada pelo menor preço!")
+                        
+                        # UX: FILTROS PÓS-BUSCA
+                        st.subheader("⚙️ Refinar Resultados")
+                        col_f1, col_f2 = st.columns(2)
+                        with col_f1:
+                            tipos_disp = df_hoteis['Tipo'].unique().tolist()
+                            tipos_sel = st.multiselect("Filtrar por Tipo:", tipos_disp, default=tipos_disp)
+                        with col_f2:
+                            preco_max = st.slider(
+                                "Preço Máximo (R$)", 
+                                min_value=int(df_hoteis['Preço Numérico'].min()), 
+                                max_value=int(df_hoteis['Preço Numérico'].max()), 
+                                value=int(df_hoteis['Preço Numérico'].max())
+                            )
+                        
+                        # Aplicação dos filtros
+                        df_filtrado = df_hoteis[
+                            (df_hoteis['Tipo'].isin(tipos_sel)) & 
+                            (df_hoteis['Preço Numérico'] <= preco_max)
+                        ]
+                        
+                        if not df_filtrado.empty:
+                            # UX: DESTAQUE DO MELHOR PREÇO
+                            st.metric(label="🏆 Opção Mais Barata Encontrada", value=f"R$ {df_filtrado.iloc[0]['Preço Numérico']:,.2f}")
+                            
+                            # Esconde a coluna numérica usada apenas para lógica e exibe a tabela
+                            df_visual = df_filtrado.drop(columns=['Preço Numérico'])
+                            
+                            st.dataframe(
+                                df_visual, 
+                                use_container_width=True, 
+                                hide_index=True,
+                                column_config={
+                                    "Link Original": st.column_config.LinkColumn("Reservar", display_text="Ver Oferta 🔗")
+                                }
+                            )
+                        else:
+                            st.warning("Nenhum hotel corresponde aos filtros selecionados.")
                     else:
-                        st.warning("Sem resultados.")
+                        st.error("❌ Não foi possível carregar os preços. Tente desativar o Modo Silencioso.")
                 finally:
                     driver.quit()

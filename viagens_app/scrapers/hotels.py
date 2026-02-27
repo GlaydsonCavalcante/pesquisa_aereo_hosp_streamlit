@@ -1,16 +1,26 @@
 # scrapers/hotels.py
 import time
 import pandas as pd
+import re
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# 1. URLs PARAMETRIZADAS CORRETAMENTE
 SITES_HOSPEDAGEM = {
     "Booking": "https://www.booking.com/searchresults.pt-br.html?ss={destino}&checkin={checkin}&checkout={checkout}&group_adults={adultos}&no_rooms={quartos}&group_children={criancas}",
-    "Airbnb": "https://www.airbnb.com.br/s/{destino}/homes?checkin={checkin}&checkout={checkout}&adults={adultos}",
 }
+
+def limpar_preco(texto_preco):
+    """Transforma 'R$ 1.500' no número 1500.0 para podermos filtrar."""
+    try:
+        # Extrai apenas os números
+        numeros = re.sub(r'[^\d]', '', texto_preco)
+        if numeros:
+            return float(numeros)
+        return 0.0
+    except:
+        return 0.0
 
 def extrair_booking(soup, url, destino):
     hoteis_encontrados = []
@@ -22,10 +32,10 @@ def extrair_booking(soup, url, destino):
             titulo = titulo_tag.text.strip() if titulo_tag else "Sem nome"
             
             preco_tag = card.find('span', attrs={'data-testid': 'price-and-discounted-price'})
-            preco = preco_tag.text.strip() if preco_tag else "Esgotado / Ver site"
+            preco_texto = preco_tag.text.strip() if preco_tag else "Esgotado"
+            preco_num = limpar_preco(preco_texto)
             
             nota_tag = card.find('div', attrs={'data-testid': 'review-score'})
-            # Limpeza do texto sujo (ex: "Com 8,5" vira "8,5")
             nota = nota_tag.text.strip().split()[-1] if nota_tag else "Sem avaliação"
             
             tipo_estadia = "Outros"
@@ -36,15 +46,18 @@ def extrair_booking(soup, url, destino):
             elif "pousada" in t_lower: tipo_estadia = "Pousada"
             elif "resort" in t_lower: tipo_estadia = "Resort"
             
-            hoteis_encontrados.append({
-                "Site": "Booking",
-                "Tipo": tipo_estadia,
-                "Nome": titulo,
-                "Destino": destino,
-                "Avaliação": nota,
-                "Preço Total": preco,
-                "Link Original": url
-            })
+            # Só adicionamos se o preço for maior que 0 (ignora hotéis esgotados)
+            if preco_num > 0:
+                hoteis_encontrados.append({
+                    "Site": "Booking",
+                    "Tipo": tipo_estadia,
+                    "Nome": titulo,
+                    "Destino": destino,
+                    "Avaliação": nota,
+                    "Preço Texto": preco_texto,
+                    "Preço Numérico": preco_num, # Usado para os filtros no Streamlit
+                    "Link Original": url
+                })
         except:
             continue
             
@@ -62,26 +75,15 @@ def buscar_hoteis(destino, checkin, checkout, adultos, criancas, quartos, driver
             driver.get(url)
             
             if nome_site == "Booking":
-                # ESPERA INTELIGENTE: Aguarda até 15 segundos para os cartões de hotéis aparecerem
-                WebDriverWait(driver, 15).until(
+                # Espera 10 segundos pelos cartões.
+                WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="property-card"]'))
                 )
-                # Pausa extra de 2 segs para garantir que os valores em R$ carregaram no JavaScript
-                time.sleep(2) 
+                time.sleep(2) # Pausa extra para renderização do JavaScript
                 
                 soup = BeautifulSoup(driver.page_source, 'html.parser')
                 dados_site = extrair_booking(soup, url, destino)
                 resultados_totais.extend(dados_site)
-            else:
-                resultados_totais.append({
-                    "Site": nome_site,
-                    "Tipo": "Vários",
-                    "Nome": f"Pesquisa geral em {nome_site}",
-                    "Destino": destino,
-                    "Avaliação": "-",
-                    "Preço Total": "Abrir link",
-                    "Link Original": url
-                })
         except Exception as e:
             print(f"Erro em {nome_site}: {e}")
             continue
