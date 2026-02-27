@@ -4,7 +4,7 @@ import pandas as pd
 import re
 
 # Importação dos nossos módulos
-from viagens_app.database import guardar_pesquisa, carregar_historico
+from database import guardar_pesquisa, carregar_historico
 from scrapers.utils import iniciar_driver
 from scrapers.flights import buscar_voos
 from scrapers.hotels import buscar_hoteis
@@ -139,8 +139,8 @@ with aba_hoteis:
                 try:
                     ci_str = checkin.strftime("%Y-%m-%d")
                     co_str = checkout.strftime("%Y-%m-%d")
-                    # No futuro passaremos check-out, pessoas e preferências para o scraper
-                    df_hoteis = buscar_hoteis(destino_hotel, ci_str, driver)
+                    # Agora passamos todos os parâmetros de datas e hóspedes
+                    df_hoteis = buscar_hoteis(destino_hotel, ci_str, co_str, hotel_adt, hotel_chd, hotel_quartos, driver)
                     
                     if not df_hoteis.empty:
                         # Guarda no nosso banco de dados local

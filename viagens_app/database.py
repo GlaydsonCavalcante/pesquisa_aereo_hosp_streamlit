@@ -20,10 +20,11 @@ def guardar_pesquisa(df_novos_dados, tipo_pesquisa):
     df_salvar['Data da Pesquisa (Sistema)'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     df_salvar['Categoria'] = tipo_pesquisa
     
-    # Se o ficheiro já existir, adicionamos os dados (append). Se não, criamos um novo.
-    if os.path.exists(ARQUIVO_HISTORICO):
+    # Se o ficheiro já existir e tiver conteúdo, adicionamos os dados (append).
+    if os.path.exists(ARQUIVO_HISTORICO) and os.path.getsize(ARQUIVO_HISTORICO) > 0:
         df_salvar.to_csv(ARQUIVO_HISTORICO, mode='a', header=False, index=False, sep=';', encoding='utf-8')
     else:
+        # Se não existir ou estiver vazio, criamos um novo com os cabeçalhos.
         df_salvar.to_csv(ARQUIVO_HISTORICO, mode='w', header=True, index=False, sep=';', encoding='utf-8')
         
     return True
@@ -32,6 +33,12 @@ def carregar_historico():
     """
     Lê o ficheiro CSV para podermos mostrar o histórico no painel.
     """
-    if os.path.exists(ARQUIVO_HISTORICO):
-        return pd.read_csv(ARQUIVO_HISTORICO, sep=';', encoding='utf-8')
+    # Verifica se o ficheiro existe E se não está vazio (tamanho > 0 bytes)
+    if os.path.exists(ARQUIVO_HISTORICO) and os.path.getsize(ARQUIVO_HISTORICO) > 0:
+        try:
+            return pd.read_csv(ARQUIVO_HISTORICO, sep=';', encoding='utf-8')
+        except pd.errors.EmptyDataError:
+            # Proteção extra caso o ficheiro esteja corrompido
+            return pd.DataFrame()
+            
     return pd.DataFrame()
