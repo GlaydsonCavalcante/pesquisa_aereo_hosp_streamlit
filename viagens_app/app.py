@@ -1,9 +1,11 @@
 # app.py
+import urllib.request
+import json
+import ssl
+import airportsdata
 import streamlit as st
 import pandas as pd
 import re
-import airportsdata
-import json
 
 # Importação dos nossos módulos
 from database import guardar_pesquisa, carregar_historico
@@ -183,25 +185,64 @@ with aba_voos:
 with aba_hoteis:
     st.subheader("Configurar Estadia e Preferências")
     
-    @st.cache_data
+    @st.cache_data(ttl=86400, show_spinner="Carregando base de municípios...")
     def obter_lista_destinos():
+        import urllib.request
+        import json
+        import ssl
+        import gzip
+        import airportsdata
+
+        # 1. IBGE: Extração via curto-circuito lógico
         try:
+            contexto_ssl = ssl._create_unverified_context()
             url_ibge = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios?orderBy=nome"
-            with urlopen(url_ibge) as response:
-                municipios = json.loads(response.read().decode())
-                cidades_br = [f"{m['nome']}, {m['microrregiao']['mesorregiao']['UF']['sigla']}" for m in municipios]
-        except Exception:
+            req = urllib.request.Request(
+                url_ibge, 
+                headers={'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'gzip'}
+            )
+            with urllib.request.urlopen(req, context=contexto_ssl, timeout=15) as response:
+                data = response.read()
+                if response.info().get('Content-Encoding') == 'gzip':
+                    data = gzip.decompress(data)
+                
+                municipios = json.loads(data.decode('utf-8'))
+                cidades_br = []
+                
+                for m in municipios:
+                    nome = m.get('nome')
+                    
+                    micro = m.get('microrregiao') or {}
+                    meso = micro.get('mesorregiao') or {}
+                    uf_data = meso.get('UF') or {}
+                    uf = uf_data.get('sigla')
+                    
+                    if not uf:
+                        imediata = m.get('regiao-imediata') or {}
+                        inter = imediata.get('regiao-intermediaria') or {}
+                        uf_data_alt = inter.get('UF') or {}
+                        uf = uf_data_alt.get('sigla', 'BR')
+                    
+                    if nome and uf:
+                        cidades_br.append(f"{nome}, {uf}")
+        except Exception as e:
+            print(f"[ERRO IBGE] {e}")
             cidades_br = ["Foz do Iguaçu, PR", "Rio de Janeiro, RJ", "São Paulo, SP"]
 
-        cidades_int = [
-            "Paris, FRA", "Londres, ING", "Nova York, EUA", "Lisboa, POR", 
-            "Roma, ITA", "Tóquio, JAP", "Buenos Aires, ARG", "Dubai, EAU", 
-            "Madri, ESP", "Berlim, ALE", "Amsterdã, HOL", "Orlando, EUA"
-        ]
-        
-        return sorted(cidades_br + cidades_int) + ["Outro"]
+        # 2. Airportsdata
+        try:
+            aeroportos = airportsdata.load('IATA')
+            cidades_int_set = set()
+            for dados in aeroportos.values():
+                if dados.get('country') != 'BR' and dados.get('city'):
+                    cidades_int_set.add(f"{dados['city']}, {dados['country']}")
+            cidades_int = sorted(list(cidades_int_set))
+        except Exception as e:
+            print(f"[ERRO AIRPORTS] {e}")
+            cidades_int = ["Paris, FR", "Orlando, US", "Lisboa, PT"]
 
-    # Lista predefinida para UX melhorada (Auto-complete)
+        return sorted(cidades_br) + cidades_int + ["Outro"]
+
     destinos_populares = obter_lista_destinos()
     
     col_h_dest1, col_h_dest2 = st.columns([2, 1])
