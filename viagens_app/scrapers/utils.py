@@ -27,27 +27,3 @@ def iniciar_driver(anonimo=True, oculto=False):
     driver = webdriver.Chrome(service=servico, options=options)
     
     return driver
-
-@st.cache_data
-    def obter_lista_destinos():
-        # Busca todas as cidades brasileiras via API oficial do IBGE
-        try:
-            url_ibge = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios?orderBy=nome"
-            with urlopen(url_ibge) as response:
-                municipios = json.loads(response.read().decode())
-                cidades_br = [f"{m['nome']}, {m['microrregiao']['mesorregiao']['UF']['sigla']}" for m in municipios]
-        except Exception:
-            # Fallback caso a API esteja indisponível
-            cidades_br = ["Foz do Iguaçu, PR", "Rio de Janeiro, RJ", "São Paulo, SP"]
-
-        # Lista manual das principais cidades estrangeiras
-        cidades_int = [
-            "Paris, FRA", "Londres, ING", "Nova York, EUA", "Lisboa, POR", 
-            "Roma, ITA", "Tóquio, JAP", "Buenos Aires, ARG", "Dubai, EAU", 
-            "Madri, ESP", "Berlim, ALE", "Amsterdã, HOL", "Orlando, EUA"
-        ]
-        
-        # Consolida, ordena e adiciona a opção de busca manual
-        return sorted(cidades_br + cidades_int) + ["Outro"]
-
-    destinos_populares = obter_lista_destinos()

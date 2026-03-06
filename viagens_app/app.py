@@ -11,7 +11,7 @@ from scrapers.utils import iniciar_driver
 from scrapers.flights import buscar_voos
 from scrapers.hotels import buscar_hoteis
 from urllib.request import urlopen
-from scrapers.utils import obter_lista_destinos
+
 # --- CONFIGURAÇÃO GLOBAL ---
 st.set_page_config(page_title="Travel Analytics Pro", page_icon="🌍", layout="wide")
 
@@ -183,6 +183,24 @@ with aba_voos:
 with aba_hoteis:
     st.subheader("Configurar Estadia e Preferências")
     
+    @st.cache_data
+    def obter_lista_destinos():
+        try:
+            url_ibge = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios?orderBy=nome"
+            with urlopen(url_ibge) as response:
+                municipios = json.loads(response.read().decode())
+                cidades_br = [f"{m['nome']}, {m['microrregiao']['mesorregiao']['UF']['sigla']}" for m in municipios]
+        except Exception:
+            cidades_br = ["Foz do Iguaçu, PR", "Rio de Janeiro, RJ", "São Paulo, SP"]
+
+        cidades_int = [
+            "Paris, FRA", "Londres, ING", "Nova York, EUA", "Lisboa, POR", 
+            "Roma, ITA", "Tóquio, JAP", "Buenos Aires, ARG", "Dubai, EAU", 
+            "Madri, ESP", "Berlim, ALE", "Amsterdã, HOL", "Orlando, EUA"
+        ]
+        
+        return sorted(cidades_br + cidades_int) + ["Outro"]
+
     # Lista predefinida para UX melhorada (Auto-complete)
     destinos_populares = obter_lista_destinos()
     
