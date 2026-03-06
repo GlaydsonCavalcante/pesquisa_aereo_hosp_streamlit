@@ -2,13 +2,16 @@
 import streamlit as st
 import pandas as pd
 import re
+import airportsdata
+import json
 
 # Importação dos nossos módulos
 from database import guardar_pesquisa, carregar_historico
 from scrapers.utils import iniciar_driver
 from scrapers.flights import buscar_voos
 from scrapers.hotels import buscar_hoteis
-
+from urllib.request import urlopen
+from scrapers.utils import obter_lista_destinos
 # --- CONFIGURAÇÃO GLOBAL ---
 st.set_page_config(page_title="Travel Analytics Pro", page_icon="🌍", layout="wide")
 
@@ -39,54 +42,138 @@ st.markdown("Selecione o módulo que deseja pesquisar nas abas abaixo:")
 aba_voos, aba_hoteis = st.tabs(["✈️ Passagens Aéreas", "🏨 Hospedagem"])
 
 # ==========================================
-# MÓDULO 1: PASSAGENS AÉREAS
+# MÓDULO 1: PASSAGENS AÉREAS (UX SÊNIOR)
 # ==========================================
 with aba_voos:
     st.subheader("Configurar Rota e Passageiros")
     
-    # Linha 1: Origem e Destino
+    # 1. Carrega a base de dados mundial exaustiva (em cache para ser ultrarrápido)
+    @st.cache_data
+    def carregar_aeroportos():
+        import airportsdata
+        db = airportsdata.load('IATA')
+        dicionario_formatado = {}
+        
+        # 1. Carregamos primeiro os destaques
+        dicionario_formatado["⭐ Brasília - BSB"] = "BSB"
+        dicionario_formatado["⭐ São Paulo (Todos) - SAO"] = "SAO"
+        dicionario_formatado["⭐ Rio de Janeiro (Todos) - RIO"] = "RIO"
+        dicionario_formatado["⭐ Foz do Iguaçu - IGU"] = "IGU"
+        dicionario_formatado["⭐ Lisboa, Portugal - LIS"] = "LIS"
+        
+        # 2. Carregamos o resto do mundo com proteção contra erros (Anti-Quebra)
+        for iata, info in db.items():
+            # O "or" garante que se o dado for nulo (None), usamos um texto padrão
+            cidade = info.get('city') or 'Cidade Desconhecida'
+            nome = info.get('name') or 'Aeroporto'
+            pais = info.get('country') or 'País Desconhecido'
+            
+            chave = f"{cidade}, {pais} - {nome} ({iata})"
+            
+            # Só adiciona se não for um dos destaques (para não ficar duplicado)
+            if iata not in ["SAO", "RIO", "BSB", "IGU", "LIS"]:
+                dicionario_formatado[chave] = iata
+            
+        return dicionario_formatado
+    
+    AEROPORTOS = carregar_aeroportos()
+    lista_nomes = list(AEROPORTOS.keys())
+    
+    # Linha 1: Origem e Destino com Auto-complete Mundial
     col_v1, col_v2 = st.columns(2)
     with col_v1:
-        origem = st.text_input("Origem (IATA)", placeholder="Ex: BSB", key="origem_voo").upper()
+        origem_sel = st.selectbox("Origem", lista_nomes, key="origem_sel")
+        origem = AEROPORTOS[origem_sel]
+            
     with col_v2:
-        destino_voo = st.text_input("Destino (IATA)", placeholder="Ex: IGU", key="destino_voo").upper()
+        # Coloca Foz do Iguaçu ou outro como padrão (index 3 da nossa lista de destaques)
+        destino_sel = st.selectbox("Destino", lista_nomes, index=3, key="destino_sel")
+        destino_voo = AEROPORTOS[destino_sel]
         
-    # Linha 2: Datas e Moeda
-    col_v3, col_v4, col_v5 = st.columns(3)
+    # Linha 2: Datas
+    col_v3, col_v4 = st.columns(2)
     with col_v3:
         data_ida = st.date_input("Data de Ida", key="data_ida")
     with col_v4:
-        # Deixamos a volta opcional por enquanto (pode ser útil no futuro)
-        data_volta = st.date_input("Data de Volta (Opcional)", value=None, key="data_volta")
-    with col_v5:
-        modo_pag_voo = st.selectbox("Moeda de Pagamento:", ["R$ (Dinheiro)", "Milhas / Pontos"])
+        # Toggle para viagem de ida e volta
+        tem_volta = st.checkbox("Incluir voo de regresso", value=True)
+        if tem_volta:
+            data_volta = st.date_input("Data de Volta", key="data_volta")
+        else:
+            data_volta = None
 
-    # Linha 3: Passageiros
-    col_v6, col_v7 = st.columns(2)
-    with col_v6:
+    # Linha 3: Passageiros e Moeda
+    col_v5, col_v6, col_v7 = st.columns(3)
+    with col_v5:
         voo_adt = st.number_input("Adultos", min_value=1, value=1, key="voo_adt")
-    with col_v7:
+    with col_v6:
         voo_chd = st.number_input("Crianças", min_value=0, value=0, key="voo_chd")
+    with col_v7:
+        modo_pag_voo = st.selectbox("Moeda:", ["R$ (Dinheiro)"]) # Restrito a R$ para focar no Google Flights por agora
 
     # Ação de Pesquisa
-    if st.button("🚀 Iniciar Pesquisa de Voos", type="primary", use_container_width=True):
+    if st.button("🚀 Pesquisar Voos", type="primary", use_container_width=True):
         if not origem or not destino_voo:
             st.error("⚠️ Origem e Destino são obrigatórios.")
+        elif tem_volta and data_volta <= data_ida:
+            st.error("⚠️ A data de volta deve ser posterior à data de ida.")
         else:
-            with st.spinner("A iniciar motor de busca de voos..."):
+            with st.spinner("A consultar o Google Flights e a extrair preços reais..."):
                 driver = iniciar_driver(anonimo=usa_anonimo, oculto=headless_mode)
                 try:
-                    data_str = data_ida.strftime("%Y-%m-%d")
-                    df_voos = buscar_voos(origem, destino_voo, data_str, modo_pag_voo, voo_adt, voo_chd, driver)
+                    d_ida_str = data_ida.strftime("%Y-%m-%d")
+                    d_volta_str = data_volta.strftime("%Y-%m-%d") if data_volta else None
+                    
+                    df_voos = buscar_voos(origem, destino_voo, d_ida_str, d_volta_str, voo_adt, voo_chd, driver)
                     
                     if not df_voos.empty:
-                        # Guarda no nosso banco de dados local
+                        # UX: Ordenação automática do menor preço
+                        df_voos = df_voos.sort_values(by="Preço Numérico", ascending=True)
                         guardar_pesquisa(df_voos, "Voos")
                         
-                        st.success("🎉 Resultados capturados e guardados no histórico!")
-                        st.dataframe(df_voos, use_container_width=True, hide_index=True)
+                        st.success("🎉 Voos reais encontrados!")
+                        
+                        # UX: Filtros Pós-Busca Dinâmicos
+                        st.subheader("⚙️ Refinar Resultados")
+                        c_f1, c_f2, c_f3 = st.columns(3)
+                        with c_f1:
+                            cias_disp = df_voos['Companhia'].unique().tolist()
+                            cias_sel = st.multiselect("Companhias:", cias_disp, default=cias_disp)
+                        with c_f2:
+                            escalas_disp = df_voos['Escalas'].unique().tolist()
+                            escalas_sel = st.multiselect("Escalas:", escalas_disp, default=escalas_disp)
+                        with c_f3:
+                            preco_max = st.slider(
+                                "Preço Máximo", 
+                                min_value=int(df_voos['Preço Numérico'].min()), 
+                                max_value=int(df_voos['Preço Numérico'].max()), 
+                                value=int(df_voos['Preço Numérico'].max())
+                            )
+                            
+                        # Aplicação dos Filtros
+                        df_filtrado = df_voos[
+                            (df_voos['Companhia'].isin(cias_sel)) & 
+                            (df_voos['Escalas'].isin(escalas_sel)) &
+                            (df_voos['Preço Numérico'] <= preco_max)
+                        ]
+                        
+                        if not df_filtrado.empty:
+                            st.metric(label="🏆 Voo Mais Barato (Filtro Atual)", value=f"R$ {df_filtrado.iloc[0]['Preço Numérico']:,.2f}")
+                            
+                            # Removemos a coluna numérica técnica e mostramos a tabela limpa
+                            df_visual = df_filtrado.drop(columns=['Preço Numérico'])
+                            st.dataframe(
+                                df_visual, 
+                                use_container_width=True, 
+                                hide_index=True,
+                                column_config={
+                                    "Link Original": st.column_config.LinkColumn("Comprar", display_text="Ver Oferta 🔗")
+                                }
+                            )
+                        else:
+                            st.warning("Nenhum voo corresponde aos filtros.")
                     else:
-                        st.warning("Sem resultados.")
+                        st.error("❌ Os preços não carregaram. O site pode ter bloqueado o acesso automático. Tente sem o Modo Silencioso.")
                 finally:
                     driver.quit()
 
@@ -97,10 +184,7 @@ with aba_hoteis:
     st.subheader("Configurar Estadia e Preferências")
     
     # Lista predefinida para UX melhorada (Auto-complete)
-    destinos_populares = [
-        "Foz do Iguaçu, PR", "Rio de Janeiro, RJ", "São Paulo, SP", 
-        "Gramado, RS", "Salvador, BA", "Florianópolis, SC", "Maceió, AL", "Outro"
-    ]
+    destinos_populares = obter_lista_destinos()
     
     col_h_dest1, col_h_dest2 = st.columns([2, 1])
     with col_h_dest1:

@@ -1,82 +1,89 @@
 # scrapers/flights.py
 import time
 import pandas as pd
+import re
 from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-SITES_VIAGENS = {
-    "R$ (Dinheiro)": {
-        "Google Flights": "https://www.google.com/travel/flights?q=Flights%20to%20{destino}%20from%20{origem}%20on%20{data}",
-        "MaxMilhas": "https://www.maxmilhas.com.br/busca-passagens-aereas/sow/{origem}/{destino}/{data}"
-    },
-    "Milhas / Pontos": {
-        "Azul Fidelidade": "https://www.voeazul.com.br/br/pt/home",
-        "Livelo": "https://www.livelo.com.br/use-seus-pontos/viagens",
-        "Smiles (Gol)": "https://www.smiles.com.br/passagens-aereas/{origem}/{destino}/{data}"
-    }
-}
+def limpar_preco(texto_preco):
+    """Transforma 'R$ 1.500' no número 1500.0 para ordenação."""
+    try:
+        numeros = re.sub(r'[^\d]', '', texto_preco)
+        if numeros: return float(numeros)
+        return 0.0
+    except:
+        return 0.0
 
-def extrair_google_flights(soup, url, origem, destino, data_viagem):
+def extrair_google_flights(soup, url, origem, destino):
     voos_encontrados = []
-    itens_voo = soup.find_all('li', class_='pIav2d') 
+    
+    # O Google Flights costuma usar a classe 'pIav2d' para os cartões de voo, 
+    # mas adicionamos um fallback para 'role="listitem"' caso mudem o CSS.
+    itens_voo = soup.find_all('li', class_='pIav2d')
+    if not itens_voo:
+        itens_voo = soup.find_all('div', attrs={'role': 'listitem'})
     
     for item in itens_voo:
         try:
-            cia_aerea_tag = item.find('div', class_='sSHqwe')
-            preco_tag = item.find('div', class_='YMlKvd')
+            cia_tag = item.find('div', class_='sSHqwe')
+            cia = cia_tag.text.strip() if cia_tag else "Companhia Aérea"
             
-            # Tenta encontrar a informação de paradas/escalas (o Google Flights usa classes variadas, procuramos texto)
+            # Procura qualquer tag que contenha o símbolo R$
+            preco_tag = item.find(string=re.compile(r'R\$'))
+            preco_texto = preco_tag.strip() if preco_tag else ""
+            preco_num = limpar_preco(preco_texto)
+            
+            # Deduz as escalas
             escalas = "1+ Paradas"
-            texto_item = item.text.lower()
-            if "direto" in texto_item or "nonstop" in texto_item:
+            texto_card = item.text.lower()
+            if "direto" in texto_card or "nonstop" in texto_card:
                 escalas = "Direto"
             
-            if cia_aerea_tag and preco_tag:
+            # Só guardamos se encontrarmos um preço real! Fim da falsa esperança.
+            if preco_num > 0:
                 voos_encontrados.append({
                     "Site": "Google Flights",
-                    "Companhia": cia_aerea_tag.text.strip(),
+                    "Companhia": cia,
                     "Escalas": escalas,
                     "Origem": origem,
                     "Destino": destino,
-                    "Data": data_viagem,
-                    "Preço/Pontos": preco_tag.text.strip(),
+                    "Preço Texto": preco_texto,
+                    "Preço Numérico": preco_num, # Usado internamente para ordenar
                     "Link Original": url
                 })
-        except:
+        except Exception:
             continue
             
     return voos_encontrados
 
-def buscar_voos(origem, destino, data_viagem, tipo_pagamento, adultos, criancas, driver):
-    resultados_totais = []
-    data_short = data_viagem.replace("-", "")[2:] 
-    sites_alvo = SITES_VIAGENS.get(tipo_pagamento, {})
+def buscar_voos(origem, destino, data_ida, data_volta, adultos, criancas, driver):
+    """Constrói a URL, espera o carregamento e extrai os voos."""
     
-    for nome_site, url_base in sites_alvo.items():
-        print(f"A pesquisar em: {nome_site}...")
-        try:
-            url = url_base.format(origem=origem, destino=destino, data=data_viagem, data_short=data_short)
-            # Dica: Muitos sites aceitam o número de passageiros na URL. Para simplificar esta etapa, 
-            # o robô fará a busca padrão, e indicaremos as quantidades na interface de análise.
-            
-            driver.get(url)
-            time.sleep(10) 
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
-            
-            if nome_site == "Google Flights":
-                dados_site = extrair_google_flights(soup, url, origem, destino, data_viagem)
-                resultados_totais.extend(dados_site)
-            else:
-                resultados_totais.append({
-                    "Site": nome_site,
-                    "Companhia": "Várias",
-                    "Escalas": "-",
-                    "Origem": origem,
-                    "Destino": destino,
-                    "Data": data_viagem,
-                    "Preço/Pontos": "Verificar no site",
-                    "Link Original": url
-                })
-        except Exception as e:
-            continue
+    # 1. PARAMETRIZAÇÃO REAL DA URL
+    # Construímos a query exata que o Google Flights usa
+    query = f"Flights to {destino} from {origem} on {data_ida}"
+    if data_volta:
+        query += f" through {data_volta}"
+        
+    url = f"https://www.google.com/travel/flights?q={query.replace(' ', '%20')}"
+    
+    resultados = []
+    try:
+        driver.get(url)
+        
+        # 2. ESPERA INTELIGENTE (Anti-Bot Level 1)
+        # Espera até 15 segundos para que os voos apareçam na tela
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'li.pIav2d, div[role="listitem"]'))
+        )
+        time.sleep(2) # Tempo para o JavaScript renderizar os preços finais
+        
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        resultados = extrair_google_flights(soup, url, origem, destino)
+        
+    except Exception as e:
+        print(f"Erro ou bloqueio ao capturar Google Flights: {e}")
 
-    return pd.DataFrame(resultados_totais)
+    return pd.DataFrame(resultados)
